@@ -1,0 +1,665 @@
+---
+title: "SAP - Analiza uspjeha učenika u školi"
+author: "Lucija Burić, Barbara Cvitanović, Hana Ćerić, Borna Odobašić"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(RColorBrewer)
+library(gridExtra)
+library(caret)
+library(nortest)
+```
+
+## Uvod
+
+U ovom projektu analiziramo podatke učenika dviju portugalskih škola.
+Korištenjem statističkih metoda i vizualizacije podataka pokušat ćemo otkriti veze između uspjeha učenika i varijabli poput spola, socioekonomskog statusa, navika učenja, prisutnosti i sl.
+Prije samog početka potrebno je učitati i proučiti podatkovni skup i prilagoditi ga da može biti na ispravan način korišten u analizi.
+Osim samog opisa varijabli i njihovog značenja, dobro je pogledati tipove varijabli podatkovnog skupa te nekoliko redaka kako bi se dobio bolji uvid u podatke s kojima se radi. 
+
+```{r}
+dataset <- read_csv("data/student_data.csv")
+glimpse(dataset)
+head(dataset)
+```
+
+Veliki broj varijabli stigao je u obliku znakovnog niza, no puno korisniji je u obliku faktora, odnosno kategorizirane vrste podataka.
+
+```{r}
+dataset$school <- factor(dataset$school)
+dataset$sex <- factor(dataset$sex)
+dataset$address <- factor(dataset$address)
+dataset$famsize <- factor(dataset$famsize)
+dataset$Pstatus <- factor(dataset$Pstatus)
+dataset$schoolsup <- factor(dataset$schoolsup)
+dataset$famsup <- factor(dataset$famsup)
+dataset$paid_mat <- factor(dataset$paid_mat)
+dataset$paid_por <- factor(dataset$paid_por)
+dataset$activities <- factor(dataset$activities)
+dataset$nursery <- factor(dataset$nursery)
+dataset$higher <- factor(dataset$higher)
+dataset$internet <- factor(dataset$internet)
+dataset$romantic <- factor(dataset$romantic)
+```
+
+```{r}
+missing_counts <- sapply(data, function(col) sum(is.na(col)))
+missing_counts
+```
+Vidimo da u našim podacima nemamo nedefiniranih vrijednosti, pa ne trebamo dodatno popunjavati ili čistiti dataset.
+
+Rudimentarna deskriptivna analiza cijelog skupa dobro je pokrivena metodom *summary*. Pomoću te metode može se steći inicijalan uvod u vrijednosti i raspršenost podataka.
+
+```{r}
+summary(dataset)
+```
+
+**1. Jesu li prosječne konačne ocjene iz matematike različite između spolova?**
+
+Prvo istraživačko pitanje ovog projekta bavi se razlikom prosječnih konačnih ocjena iz matematike između učenika i učenica, odnosno pitanjem postoji li između njih ikakva razlika. Prikladan test za ovakvo pitanje je t-test o jednakosti dviju sredina za dva promatrana uzorka: uzorak učenika i uzorak učenica, naravno ako možemo pretpostaviti uzorci dolaze iz normalne distribucije i da su nezavisni.
+
+Na samom početku istraživačkog pitanja, postavit ćemo hipoteze.\
+H~0~: Konačne ocjene iz matematike kod učenika i učenica su jednake, $\mu_{ocjeneM} = \mu_{ocjeneF}$.\
+H~1~: Konačne ocjene iz matematike kod učenika i učenica nisu jednake, $\mu_{ocjeneM} \neq \mu_{ocjeneF}$.\
+Test ćemo provoditi na razini značajnosti od 5%.\
+
+Podatke značajne za samo pitanje treba vizualizirati. Promatramo vrijednosti varijable G3_mat koja je u predlošku o podacima definirana kao konačna ocjena iz matematike.
+Prvo ćemo prikazati *box-plot* potrebnih podataka, odnosno konačnih ocjena iz matematike ovisno o spolu kako bismo dobili inicijalan uvid u razdiobu podataka te potencijalnih outliera.
+
+```{r, fig.height=3, fig.width=5}
+ggplot(dataset, aes(x = factor(sex), y = G3_mat, fill = factor(sex))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(name = "Konačna ocjena iz matematike") + 
+  scale_x_discrete(name = "Spol", labels = c("Ž", "M")) +
+  labs(title = "Boxplot konačnih ocjena iz matematike - spol") + 
+  scale_fill_manual(
+    name = "Spol", 
+    labels = c("Ž", "M"), 
+    values = c("F" = "pink", "M" = "lightblue")
+    )
+```
+
+Pomoću box-plotova dobili smo kvartile i outliere. U oba spola problem predstavljaju ocjene vrijednosti 0.
+Ono što nas zanima je sam broj ocjena 0, odnosno jesu li ovi outlieri zanemarivi. 
+Zato ćemo prikazati podatke histogramom s relativnim frekvencijama.
+
+```{r, fig.height=3}
+ggplot(dataset, aes(G3_mat, fill = sex)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 10, 
+    colour = "black", 
+    position = position_dodge(width = 0.7), 
+    alpha = 0.8
+  ) +
+  scale_x_continuous(name = "Konačna ocjena iz matematike") +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks(5)
+  ) +
+  labs(title = "Histogram konačnih ocjena po spolu") +
+  scale_fill_discrete(name = "Spol", labels = c("Ž", "M"))
+
+```
+
+Iz ovih histograma možemo vidjeti slične stvari kao i kod *box-plota*, ali isto tako i da je poveći broj ocjena 0 (kod učenica i preko 5%).
+Kako je uvjet provedbe ovakvog testa normalnost podataka, napravit ćemo i *Q-Q plot* pomoću kojeg bismo mogli donijeli odluku o tome pripadaju li podaci normalnoj distribuciji.
+
+```{r}
+g1qq1 <- ggplot(dataset |> filter(sex == "M"), aes(sample = G3_mat)) +
+  geom_qq(colour = "lightblue") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot konačnih ocjena iz matematike - učenici")
+
+g1qq2 <- ggplot(dataset |> filter(sex == "F"), aes(sample = G3_mat)) +
+  geom_qq(colour = "pink") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot konačnih ocjena iz matematike - učenice")
+
+grid.arrange(g1qq1, g1qq2)
+```
+
+Po *Q-Q plotovima* možemo zaključiti kako je broj ocjena 0 prevelik i narušava normalnost podataka.
+
+Još jedan način provjere normalnosti je i Lillieforsova inačica Kolmogorov-Smirnovljevog testa.
+
+```{r}
+#učenici
+lillie.test(dataset |> filter(sex == "M") |> pull(G3_mat))
+
+#učenice
+lillie.test(dataset |> filter(sex == "F") |> pull(G3_mat))
+
+```
+Na temelju Lillieforsove inačice KS testa vidimo da su p-vrijednosti iznimno male i možemo zaključiti da distribucija ne podilazi normalnoj.
+S obzirom na sve dosad prikazano, pokušat ćemo ponovno uz izbacivanje svih ocjena 0. To ćemo napraviti s opravdanjem da su te vrijednosti OUTLIERI u našim boxplotovima.
+
+```{r}
+dataset |> filter(sex == "M") |> count(G3_mat == 0)
+dataset |> filter(sex == "F") |> count(G3_mat == 0)
+```
+Vidimo da kod učenica čak 22 imaju ocjenu 0 iz završnog ispita iz matematike, dok je kod učenika taj broj 13.
+To ćemo imati na umu kod konačnog rezultata ukoliko je potrebno. 
+
+Pogledajmo sada *box-plot* ocjena bez nula.
+
+```{r, fig.height=3}
+df1 <- dataset
+df1 <- df1 |> filter(G3_mat != 0)
+
+ggplot(df1, aes(x = factor(sex), y = G3_mat, fill = factor(sex))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(
+    name = "Konačna ocjena iz matematike",
+    breaks = scales::pretty_breaks()
+    ) + 
+  scale_x_discrete(name = "Spol", labels = c("Ž", "M")) +
+  labs(title = "Boxplot konačnih ocjena iz matematike - spol") + 
+  scale_fill_manual(
+    name = "Spol", 
+    labels = c("Ž", "M"), 
+    values = c("F" = "pink", "M" = "lightblue")
+    )
+```
+
+*Box-plotovi* su sada eliminirali ocjene 0 kao outliere, dapače, više nemamo ouliere i čini se da je ovaj rezultat nešto bliži traženom. Također, naizgled se oblik box-plota nije promijenio, pa se čini kao da nismo previše narušili podatke izbacivanjem 0.
+
+```{r, fig.height=3}
+ggplot(df1, aes(G3_mat, fill = sex)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 7, 
+    colour = "black", 
+    position = position_dodge(width = 0.8), 
+    alpha = 0.8
+  ) +
+  scale_x_continuous(name = "Konačna ocjena iz matematike") +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks(5)
+  ) +
+  labs(title = "Histogram konačnih ocjena po spolu") +
+  scale_fill_discrete(name = "Spol", labels = c("Ž", "M"))
+```
+
+Histogrami sada pokazuju puno ljepšu distribuciju, ali ćemo dodatno napraviti i *Q-Q plotove*.
+
+
+```{r}
+gq1 <- ggplot(df1 |> filter(sex == "M"), aes(sample = G3_mat)) +
+  geom_qq(colour = "lightblue") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot konačnih ocjena iz matematike - učenici")
+
+gq2 <- ggplot(df1 |> filter(sex == "F"), aes(sample = G3_mat)) +
+  geom_qq(colour = "pink") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot konačnih ocjena iz matematike - učenice")
+
+grid.arrange(gq1, gq2)
+```
+
+Izbacivanjem nula podaci su puno bliže *Q-Q liniji* što je bitno za uvjet normalnosti kako bi se proveo *t-test* nad ovim podacima. 
+Ponovno ćemo provesti Lillieforsov test.
+
+```{r}
+#učenici
+lillie.test(df1 |> filter(sex == "M") |> pull(G3_mat))
+
+#učenice
+lillie.test(df1 |> filter(sex == "F") |> pull(G3_mat))
+
+```
+Vidimo da se Lillieforsovim testom p-vrijednost povećala za nekoliko redova veličine, iako je p-vrijednost mala, provest ćemo t-test na temelju prethodnih histograma i *Q-Q plota* i time pretpostavljamo normalnost naših uzoraka. Lillieforsova inačica KS test-a vrlo je strog statistički test koji će vrlo često odbaciti pretpostavku normalnosti, čak i za najmanja odstupanja od normalne razdiobe.
+
+Zadnja stvar koju treba napraviti prije samog *t-testa* je provjeriti jednakost varijanci jer se sama provedba testa razlikuje oko pretpostavke jednakosti ili nejednakosti varijanci.
+
+Za provođenje koristit ćemo *F-test* na razini značajnosti od 5%.\
+Prvo ćemo izračunati varijance oba uzorka, a zatim provesti *F-test*.
+
+Hipoteze *F-testa*:\
+H~0~: Varijance konačnih ocjena kod oba spola su jednake\
+H~1~: Varijance ocjena kod oba spola nisu jednake\
+
+```{r}
+maleGrades <- df1 |> filter(sex == "M") |> pull(G3_mat)
+femaleGrades <- df1 |> filter(sex == "F") |> pull(G3_mat)
+
+var.test(maleGrades, femaleGrades, alternative = "two.sided", conf.level = 0.95)
+```
+
+Dobiveni omjer varijanci je ~1.017, a 95%-tni interval je između 0.75 i 1.38. Upadanjem u sami interval i dobivenom p-vrijednosti od 0.9118, nećemo odbaciti H~0~.
+S tim saznanjem možemo provesti *t-test* o jednakosti sredina kod oba uzorka s jednakim varijancama (uz pretpostavku jednakih varijanci).
+
+```{r}
+t.test(maleGrades, femaleGrades, alternative = "two.sided", var.equal = T, conf.level = 0.95)
+```
+
+Nakon provedenog testa, vidimo da je dobivena vrijednost 2.36 i pripadna p-vrijednost 0.0186. Isto tako možemo vidjeti i značajno veću sredinu uzorka učenika. S tim podacima jasno je da se odbacuje H~0~ hipoteza na razini značajnosti od 5%. Ne smijemo zaboraviti kako smo kod odstranjivanja ocjena nula odbacili više ocjena kod učenica. Time nam ovi rezultati još više idu u prilog te gotovo sigurno možemo reći da su učenici uspješniji od učenica.
+
+
+**2. Postoji li razlika u prvoj ocjeni iz matematike s obzirom na mjesto stanovanja učenika?**
+
+U drugom istraživačkom pitanju bavimo se utvrđivanjem postoji li razlika u prvoj ocjeni iz matematike obzirom na mjesto stanovanja. Varijabla *address* sadrži podatak o tome živi li učenik u urbanom ili ruralnom području.
+
+```{r}
+addr <- dataset |> select(address)
+#broj učenika iz ruralnih/urbanih područja - vidljivo u tablici
+table(addr)
+```
+Sada ćemo kategorizirati ocjene.
+U Portugalu se u sustavu ocjenjivanja koristi skala od 0 do 20, ali rezultatima se pridjeljuju određene ocjene: *Mau*, *Mediocre*, *Suficiente*, *Bom*, *Muito Bom*, *Excelente* i *Muito bom con distincao e louvor*. Zato ćemo
+rezultatima pridijeliti ocjene na skali od 1 do 7 kako bismo napravili analizu. Napomena: ocjenu  *Excelente* i *Muito bom con distincao e louvor* spojit ćemo u jednu najvišu ocjenu jer najviša ocjena ne sadrži učenike u toj kategoriji.
+
+
+```{r}
+df2 <- dataset
+ 
+df2 <- df2 |> mutate(Grade = ifelse(G1_mat < 7, 1, ifelse(G1_mat < 10, 2 , ifelse(G1_mat < 14, 3, ifelse(G1_mat < 16, 4, ifelse(G1_mat < 18, 5, ifelse(G1_mat < 20, 6, 7)))))))
+ 
+```
+Za ovakav zadatak htjeli bismo provesti *Hi-kvadrat test nezavisnosti*.
+Hipoteze testa:\
+H~0~: Razlike u prvoj ocjeni iz matematike s obzirom na mjesto stanovanja ne postoje, tj. prva ocjena iz matematike ne ovisi o mjestu stanovanja učenika.\
+H~1~: Postoje razlike u prvoj ocjeni iz matematike s obzirom na mjesto stanovnja učenika, tj. prva ocjena iz matematike ovisi o mjestu stanovanja.\
+Test ćemo provesti na razini značajnosti od 5%.\
+
+Izrađujemo kontingencijsku tablicu.
+```{r}
+grade_table <- table(df2$address, df2$Grade)
+added_margins_tbl = addmargins(grade_table)
+added_margins_tbl
+```
+
+
+Ponovno ćemo prvo napraviti *box-plot* dijagrame kako bismo dobili osnovni pogled na distribuciju.
+
+```{r, fig.height=3.2}
+ggplot(df2, aes(x = factor(address), y = Grade, fill = factor(address))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(name = "Prva ocjena iz matematike",
+  breaks = scales::pretty_breaks()
+  ) + 
+  labs(
+    title = "Boxplot prve ocjene iz matematike - mjesto stanovanja"
+    ) +
+  scale_x_discrete(name = "Mjesto stanovanja") + 
+  scale_fill_brewer(
+    name = "Mjesto stanovanja", 
+    labels = c("Ruralno", "Urbano"),
+    palette = "Spectral"
+    )
+```
+Iz ovih *box-plotova* možemo odmah vidjeti da je raspršenje ocjena veće kod učenika iz urbanih područja, dok kod učenika iz ruralnih područja vidimo dosta skupljene rezultate, tako da su i generirale nešto više outliera. Koliko su značajni, ponovno ćemo provjeriti pomoću histograma.
+
+```{r}
+g2hist1 <- ggplot(df2 |> filter(address == "U"), aes(Grade)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 6, 
+    colour = "black",
+    fill = "mediumspringgreen"
+  ) +
+  scale_x_continuous(
+    name = "Prva ocjena iz matematike",
+    breaks = scales::pretty_breaks()
+    ) +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks()
+  ) +
+  labs(title = "Histogram prvih ocjena - urbano")
+
+
+g2hist2 <- ggplot(df2 |> filter(address == "R"), aes(Grade)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 6, 
+    colour = "black",
+    fill = "maroon"
+  ) +
+  scale_x_continuous(
+    name = "Prva ocjena iz matematike",
+    breaks = scales::pretty_breaks()
+    ) +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks()
+  ) +
+  labs(title = "Histogram prvih ocjena - ruralno")
+
+grid.arrange(g2hist1, g2hist2)
+```
+Iz priloženih histograma, dalo bi se naslutiti da su relativni udjeli podataka prilično slični, no prije provedbe samog testa, potrebno je još izračunati očekivane frekvencije. Uvjet za provedbu *Hi-kvadrat testa nezavisnosti* je da su očekivane frekvencije **svake kategorije** barem 5.
+
+
+```{r}
+row_totals <- margin.table(grade_table, 1)
+col_totals <- margin.table(grade_table, 2)
+grand_total <- sum(grade_table)
+
+expected_frequencies <- outer(row_totals, col_totals) / grand_total
+expected_frequencies
+
+```
+Prema navedenim frekvencijama, izvjesno je da nemaju sve kategorije očekivanu frekvenciju veću ili jednaku 5. U tom slučaju koristit ćemo *Fischer-Irwin egzaktni test*.
+
+```{r}
+fisher.test(grade_table, conf.level = 0.95)
+```
+Prema provedenom Fisherovom egazaktnom testu, dobili smo p-vrijednost od čak 0.71. Dakako, to znači da se H~0~ ne može odbaciti pa su prve ocjene iz matematike neovisne o tome odakle učenik dolazi, što je samo dodatna potvrda viđenog na histogramu s relativnim frekvencijama.
+
+**3. Možemo li predvidjeti prolaz iz završnog ispita iz jezika na temelju sociodemografskih varijabli poput spola, obrazovanja roditelja i veličine obitelji?**
+
+U ovom istraživačkom pitanju zanima nas predikcija prolaza iz portugalskog jezika na temelju određenih varijabli, stoga ćemo koristiti model logističke regresije koji ćemo trenirati nad našim podacima. Podaci su na početku već prilagođeni za testiranje, jedino kako ne postoji zapis o samom prolazu (ocjena veća od 10), moramo u tablicu dodati još podatak o tome je li učenik prošao ili pao na završnom ispitu iz jezika. Upravo ti podaci bit će ključni za učenje modela, metodom procjene najveće izglednosti.
+
+```{r}
+df3 <- dataset |> mutate(pass_por = ifelse(G3_por >= 10, 1 , 0)) |>
+  mutate(pass_por = factor(pass_por, levels = c(0, 1)))
+```
+
+```{r}
+sum(df3$pass_por == 1)
+sum(df3$pass_por == 0)
+```
+Moramo imati na umu moguću pristranost modela kojeg treniramo zbog nebalansiranosti podataka nad kojima prilagođavamo model. Naime, preko 90% učenika je prošlo portugalski jezik. To bi nam moglo dati iskrivljene podatke.
+
+Prije same prilagodbe modela podacima, viuzalizirat ćemo podatke prema prije navedenim sociodemografskim varijablama, kako bismo lakše interpretirali rezultate za trenirani model.
+(Napomena: Kako smo prolaz označili faktorom, dobiveni box-plotovi bili bi beznačajni pa ćemo se za potrebe grafova koristiti ocjenama koje su učenici dobili u završnom ispitu.)
+
+```{r, fig.height=3}
+g1 <- ggplot(df3 , aes(x = sex, y = G3_por, fill = sex)) +
+  geom_boxplot(color = "black") +
+  scale_x_discrete(
+    name = "Spol",
+    labels = c("Ž", "M")
+  ) +
+  scale_y_continuous(
+    name = "Završna ocjena iz jezika",
+    breaks = seq(0, 20, 5)
+    ) + 
+  labs(
+    title = "Boxplot završne ocjene iz jezika - spol"
+    ) + 
+  scale_fill_discrete(name = "Spol", labels = c("Ž", "M"))
+
+g2 <- ggplot(df3 , aes(x = factor(Medu), y = G3_por, fill = factor(Medu))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(
+    name = "Završna ocjena iz jezika",
+    breaks = seq(0, 20, 5)
+    ) + 
+  scale_x_discrete(name = "Obrazovanje majke") +
+  labs(
+    title = "Boxplot završne ocjene iz jezika - obrazovanje majke"
+    ) + 
+  scale_fill_discrete(name = "Obrazovanje majke")
+
+g3 <- ggplot(df3 , aes(x = factor(Fedu), y = G3_por, fill = factor(Fedu))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(
+    name = "Završna ocjena iz jezika",
+    breaks = seq(0, 20, 5)
+    ) + 
+  scale_x_discrete(name = "Obrazovanje oca") +
+  labs(
+    title = "Boxplot završne ocjene iz jezika - obrazovanje oca"
+    ) + 
+  scale_fill_discrete(name = "Obrazovanje oca")
+
+g4 <- ggplot(df3 , aes(x = factor(famsize), y = G3_por, fill = factor(famsize))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(
+    name = "Završna ocjena iz jezika",
+    breaks = seq(0, 20, 5)
+    ) + 
+  scale_x_discrete(name = "Veličina obitelji") +
+  labs(
+    title = "Boxplot završne ocjene iz jezika - veličina obitelji"
+    ) + 
+  scale_fill_discrete(name = "Veličina obitelji")
+
+g1
+g2
+g3
+g4
+```
+Iz ovih box-plotova mogli bismo izvući razne zaključke, no treba imati na umu da se testira prolaz iz određenog predmeta, tako da je ključno gledati ocjene veće ili jednake 10. Npr. iz box-plota o obrazovanju majke moglo bi se reći da je većim obrazovanjem veća i ocjena, ali u smislu samog prolaza predmeta praktički se ništa ne mijenja. 
+Jedino vrijedno spomena moglo bi biti to što je prvi kvartil muških učenika točno na granici prolaza pa bi se eventualno tu mogla vidjeti odstupanja. Sada ćemo prikazati histogram, samo za varijablu spol (jer će nam ona kasnije biti značajna).
+
+```{r, fig.height=3}
+ggplot(df3, aes(G3_por, fill = sex)) +
+  geom_histogram(
+    bins = 10, 
+    colour = "black", 
+    position = position_dodge(width = 0.95), 
+    alpha = 0.8
+  ) +
+  scale_x_continuous(name = "Konačna ocjena iz jezika") +
+  scale_y_continuous(
+    name = "Frekvencija",
+    breaks = scales::pretty_breaks(5)
+  ) +
+  labs(title = "Histogram konačnih ocjena po spolu") +
+  scale_fill_discrete(name = "Spol", labels = c("Ž", "M"))
+
+```
+Za daljnje zaključke konačno ćemo trenirati model logističke regresije nad našim podacima, ocijeniti model na temelju matrice zabune (engl. confusion matrix) i interpretirati rezultate iz statističkih rezultata iz treniranja modela. 
+
+```{r}
+#treniranje modela uzimajuci u obzir sve sociodemografske varijable
+model <- glm(pass_por ~ sex + Medu + Fedu + famsize,
+             data = df3,
+             family = binomial)
+
+summary(model)
+
+
+df3 <- df3 |>
+  mutate(predicted_prob = predict(model, type = "response"))
+```
+Interpretiramo dobiveni model logističke regresije:
+ - spol ima utjecaj na predikciju, takav da za spol=M vrijedi da će negativno utjecati na predikciju o čemu govori mala p-vrijednost i to na razini značajnosti 0.001
+ - učenici iz manjih obitelji (famSizeLE3) imaju veće vrijednosti procijenjenih logitsa, pa time sugeriraju mogući prolaz na ispitu, ali rezultat nije statistički značajan.
+ 
+No zaustavimo se na trenutak i promotrimo matricu zabune da vidimo kako model donosi odluku.
+
+```{r}
+threshold <- 0.5
+
+df3 <- df3 %>%
+  mutate(predicted_class = ifelse(predicted_prob > threshold, 1, 0))
+
+table(df3$predicted_class, df3$pass_por)
+
+
+accuracy <- mean(df3$pass_por == df3$predicted_class)
+precision <- sum(
+  df3$pass_por == 1 & df3$predicted_class == 1) / sum(df3$predicted_class == 1
+                                                      )
+recall <- sum(df3$pass_por == 1 & df3$predicted_class == 1) / sum(df3$pass_por == 1)
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+accuracy
+precision
+recall
+f1_score
+
+```
+Rezultat iz matrice zabune sugerira nam da možemo odbaciti ovaj trenirani model, jer se on ne prilagođava našim ulaznim podacima iz sociodemografskih varijabli već, zbog preko 90% oznaka 1 od ukupnog broja oznaka, za svaki ulaz daje predikciju 1 tj. prolazak ispita. Takav model ne generalizira dobro.
+To ćemo pokušati popraviti kreiranjem balansiranijeg dataseta jer empirijski gledano, najbolje je imati otprilike jednak broj oznaka 0 - pao i 1 - prošao, ali mi ćemo uzeti nešto veći uzorak učenika koji su prošli. 
+Time pretpostavljamo da je naš slučajni poduzorak učenika koji su prošli dobro reprezentira početni veći uzorak.
+
+```{r}
+set.seed(-123456)
+
+dfSampled <- df3 |> filter(pass_por == 0)
+dfHelp <- df3 |> filter(pass_por == 1) |> slice_sample(n = 58)
+
+dfSampled <- rbind(dfSampled, dfHelp)
+```
+
+Odabrali smo 58 učenika koji su prošli da nam predstavljaju poduzorak, tako da naš skup nad kojim ćemo ponovno provesti test ima ukupno 87 učenika. Kako bismo se uvjerili da naš slučajni poduzorak učenika koji su prošli dobro reprezentira početni veći uzorak, ponovili smo prethodnu deskriptivnu analizu nad ovim smanjenim datasetom i uvjerili se da se box plotovi i histogrami nisu značajno promijenili (ne nalazi se u izvještaju zbog sažetosti). 
+
+
+```{r}
+model2 <- glm(pass_por ~ sex + Medu + Fedu + famsize,
+             data = dfSampled,
+             family = binomial)
+
+summary(model2)
+```
+Promotrimo rezultate prilagodbe modela podacima. Vidimo da na razini značajnosti 0.001 možemo zaključiti da spol igra ulogu u predikciji prolaza, tj. da je za muški spol manja vjerojatnost prolaza predmeta, iako ne možemo znati koliko točno. Možemo izvući jedino zaključak o pozitivnom ili negativnom utjecaju. Također prema rezultatu modela Medu varijabla također ima pozitivan utjecaj na prolaz učenika na ispitu. Također ovi rezultati upućuju i na pozitivni utjecaj  varijable Medu, dok ostale varijable nemaju statistički značajan utjecaj, no sigurno na neki način pridonose prilagodbi modela. Ono što nam je najzanimljivije promotriti je ocjena statističkog testa koja se bazira na maximum likehood estimation metodi, devijancu koju nam je izbacio R. Rezidualna devijanca modela nad našim podacima za odabrani poduzorak znatno je manja od od prve rezidualne devijance, što ide u prilog da se drugi model bolje prilagodio podacima kada smo smanjili skup za treniranje.
+
+Još jednom provjeravamo confusion matrix kako bismo provjerili ispravnost modela.
+
+```{r}
+dfSampled <- dfSampled |>
+  mutate(predicted_prob = predict(model2, type = "response"))
+
+threshold <- 0.5
+
+dfSampled <- dfSampled %>%
+  mutate(predicted_class = ifelse(predicted_prob > threshold, 1, 0))
+
+table(dfSampled$predicted_class, dfSampled$pass_por)
+
+
+accuracy2 <- mean(dfSampled$pass_por == dfSampled$predicted_class)
+precision2 <- sum(
+  dfSampled$pass_por == 1 & dfSampled$predicted_class == 1) / sum(dfSampled$predicted_class == 1)
+
+                                              
+recall2 <- sum(dfSampled$pass_por == 1 & dfSampled$predicted_class == 1) / sum(dfSampled$pass_por == 1)
+f1_score2 <- 2 * (precision2 * recall2) / (precision2 + recall2)
+
+
+accuracy2
+precision2
+recall2
+f1_score2
+```
+Sada vidimo da unatoč malo lošijem accuracyju, se naš model bolje prilagođava podacima iz balansiranijeg dataseta. Dakle visok accuracy ne znači nužno bolji model!
+
+Zaključujemo da s vjerojatnošću 80.45% (vrijednost accuracy) možemo predvidjeti prolaz na ispitu na temelju sociodemografskih varijabli: spol, obrazovanje roditelja i veličina obitelji, na temelju uzoraka kojima smo prethodno balansirali podatke. 
+
+
+**4. Postoji li razlika u broju izostanaka iz matematike izmedu učenika koji dolaze iz manjih i većih obitelji?**
+
+U podatkovnom skupu postoji varijabla *famsize* koja definira manje i veće obitelji, vrijednostima *LE3* i *GT3*,odnosno je li veličina obitelji manja ili jednaka 3, ili je veća od toga.
+
+Zanima nas razlika u broju izostanaka, pa pogledajmo distribuciju podataka kroz varijable broj izostanaka u ovisnosti o veličini obitelji.
+Prvo ćemo pogledati *box-plotove* ovisno o veličini obitelji.
+
+```{r, fig.height=3.4}
+ggplot(dataset, aes(x = factor(famsize), y = absences_mat, fill = factor(famsize))) +
+  geom_boxplot(color = "black") +
+  scale_y_continuous(name = "Broj izostanaka iz matematike",
+  breaks = scales::pretty_breaks()
+  ) + 
+  labs(
+    title = "Boxplot broja izostanaka iz matematike - veličina obitelji"
+    ) +
+  scale_x_discrete(name = "Mjesto stanovanja") + 
+  scale_fill_brewer(
+    name = "Veličina obitelji", 
+    labels = c("Više od 3", "Max 3"),
+    palette = "BrBG"
+    )
+```
+*Box-plotovi* su prikazali donekle očekivano, većina učenika ima iznimno malen broj izostanaka, no postoje outlieri među učenicima koji najviše izostaju. Za bolje razumijevanje distribucije, napravit ćemo histograme.
+
+```{r}
+g4hist1 <- ggplot(dataset |> filter(famsize == "LE3"), aes(absences_mat)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 10, 
+    colour = "black",
+    fill = "salmon"
+  ) +
+  scale_x_continuous(name = "Broj izostanaka iz matematike") +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks(5)
+  ) +
+  labs(title = "Histogram izostanaka iz matematike - max. 3 člana obitelji")
+
+
+g4hist2 <- ggplot(dataset |> filter(famsize == "GT3"), aes(absences_mat)) +
+  geom_histogram(
+    aes(y = after_stat(count) / sum(after_stat(count))),
+    bins = 10, 
+    colour = "black",
+    fill = "darkviolet"
+  ) +
+  scale_x_continuous(name = "Broj izostanaka iz matematike") +
+  scale_y_continuous(
+    name = "Relativna frekvencija",
+    labels = scales::percent_format(),
+    breaks = scales::pretty_breaks(5)
+  ) +
+  labs(title = "Histogram izostanaka iz matematike - više od 3 člana obitelji")
+
+grid.arrange(g4hist1, g4hist2)
+```
+Histogrami najbolje dočaravaju koncentraciju učenika s malim brojem izostanaka. Dodatno ćemo ovu situaciju prikazati *Q-Q plotom* koja bi samo trebala potvrdili da ovdje nema riječi o normalnosti podataka.
+
+```{r}
+g4qq1 <- ggplot(dataset |> filter(famsize == "LE3"), aes(sample = absences_mat)) +
+  geom_qq(colour = "salmon") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot izostanaka iz matematike - max. 3 člana obitelji")
+
+g4qq2 <- ggplot(dataset |> filter(famsize == "GT3"), aes(sample = absences_mat)) +
+  geom_qq(colour = "darkviolet") +
+  geom_qq_line(colour = "black") +
+  scale_y_continuous(name = "Uzorak") +
+  scale_x_continuous(name = "Teorijski kvantili") +
+  labs(title = "Q-Q plot izostanaka iz matematike - više od 3 člana obitelji")
+
+grid.arrange(g4qq1, g4qq2)
+```
+U oba slučaja podaci su preteški u lijevom repu, *right-skewed*, a zatim outlieri koje smo vidjeli u *box-plotovima* su preveliki da bi ih se moglo smatrati dijelom normalne distribucije. Za vlastite potrebe pokušali smo transformirati podatke logaritamskom transformacijom kako bismo raspršili podatke u lijevom repu, ali nismo uspjeli dobiti distribuciju ni približnu normalnoj.
+
+Kako s ovakvim podacima ne možemo pristupiti parametarskom *t-testu*, koristit ćemo neparametarski test koji ima manju snagu testa, ali ga možemo provesti neovisno o distribuciji. 
+
+Jedina pretpostavka koju imamo, koja je i u potpunosti opravdana, jest da su dva uzorka (učenika iz manjih i učenika iz većih obitelji) nezavisna. 
+
+Odabir prikladnog testa je *Mann-Whitney-Wilcoxonov test* koji za nezavisne uzorke testira jednakost dviju distribucija: 
+H0 : $M_{LE3} = M_{GT3}$.\ Nema razlike u broju izostanaka između učenika koji dolaze iz manjih i većih obitelji.
+H1: $M_{LE3} \neq M_{GT3}$.\ Postoji razlika u broju izostanaka između učenika koji dolaze iz manjih i većih obitelji. 
+
+
+```{r}
+le3absences <- dataset |> filter(famsize == "LE3") |> pull(absences_mat)
+gt3absences <- dataset |> filter(famsize == "GT3") |> pull(absences_mat)
+
+median(le3absences)
+median(gt3absences)
+
+wilcox.test(le3absences, gt3absences, alternative = "two.sided", conf.level = 0.95)
+```
+Prije same provedbe testa, dodatno su ispisani medijani za obje grupe, i moguće je vidjeti da je medijan izostanaka na zadanom skupu nešto veći kod učenika čije obitelji imaju najviše tri člana. No, provedbom Mann-Whitney-Wilcoxonovog testa dobivamo p-vrijednost od 0.1055. To znači da na razini značajnosti od 5% ne možemo odbaciti H~0~, odnosno ostajemo pri tome da je broj izostanaka neovisan o broju članova obitelji, iako treba imati na umu relativno malenu p-vrijednost. Također ovaj test je neparametarski i zbog manje snage testa, ubuduće bismo se zapitali kako provesti test s većom snagom i kakve bismo tada rezultate i odluke mogli donijeti.
+
